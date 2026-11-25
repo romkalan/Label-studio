@@ -61,6 +61,12 @@ canvas{width:100%;height:auto;background:#fff;border-radius:8px;box-shadow:0 6px
         <label>Ширина лица, мм<input id="w" type="number" value="110" min="50" max="300"></label>
         <label>Высота лица, мм<input id="h" type="number" value="70" min="40" max="300"></label>
       </div>
+      <label>Готовый формат
+        <select id="fmt">
+          <option value="110x70" selected>110 × 70 — рулон 110</option>
+          <option value="108x67">108 × 67 — уменьшенный</option>
+        </select>
+      </label>
       <label>Страна<input id="country" value="КЕНИЯ"></label>
       <label class="wide">Лот (регион / станция / грейд)<input id="lot" value="МАТАРИНИ AA" placeholder="Например: ГИДЕ АБАЯ · ВАШИНГ СТЕЙШН · AA"></label>
       <label>Обработка<input id="process" value="МЫТАЯ ОБРАБОТКА"></label>
@@ -83,7 +89,9 @@ canvas{width:100%;height:auto;background:#fff;border-radius:8px;box-shadow:0 6px
       <label>Рисунок (свой файл)<input id="artFile" type="file" accept="image/*"></label>
       <label>Размер рисунка, %<input id="artScale" type="range" min="30" max="220" value="100"></label>
       <label>Сдвиг рисунка, мм<input id="artShift" type="range" min="-40" max="25" value="0"></label>
+      <label>Сдвиг по высоте, мм<input id="artShiftY" type="range" min="-30" max="30" value="0"></label>
       <label>Тон рисунка, %<input id="artTone" type="range" min="0" max="100" value="50"></label>
+      <label class="chk"><input id="artSolid" type="checkbox"> Рисунок без полутонов (термопечать)</label>
       <label>Фон (файл)<input id="bgFile" type="file" accept="image/*"></label>
       <label>Прозрачность фона, %<input id="bgAlpha" type="range" min="0" max="100" value="100"></label>
     </div>
@@ -125,6 +133,14 @@ canvas{width:100%;height:auto;background:#fff;border-radius:8px;box-shadow:0 6px
     <button id="pdfSet">Скачать комплект PDF (лицо + оборот)</button>
     <button id="pdfOne" class="ghost">Скачать PDF (текущая)</button>
     <button id="png" class="ghost">Скачать PNG</button>
+    <label class="chk"><input id="noBleed" type="checkbox" checked> PDF без вылетов (под печать)</label>
+    <label>Разрешение растра
+      <select id="dpiSel">
+        <option value="300" selected>300 dpi — типография</option>
+        <option value="203">203 dpi — наш принтер</option>
+      </select>
+    </label>
+    <label class="chk"><input id="prev1b" type="checkbox"> Показать, как напечатает (1-бит)</label>
     <p class="hint" id="sizeInfo"></p>
   </div>
 
@@ -2473,7 +2489,8 @@ var qrcode = function() {
 //# sourceMappingURL=pdf-lib.min.js.map
 </script>
 <script>
-const DPI = 300, MM = DPI / 25.4, BLEED = 2;
+let DPI = 300, MM = DPI / 25.4;
+const BLEED = 2;
 const BASE_W = 110, BASE_H = 70;
 const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d');
@@ -2714,7 +2731,7 @@ async function loadCzPdf(file) {
   $('pdfBatch').textContent = `Скачать PDF оборотов (${out.length} шт.)`;
 }
 
-function toneImage(src, pct) {
+function toneImage(src, pct, solid) {
   const off = document.createElement('canvas');
   off.width = src.width; off.height = src.height;
   const o = off.getContext('2d');
@@ -2723,6 +2740,13 @@ function toneImage(src, pct) {
   const v = Math.round(255 * (1 - pct / 100));
   o.fillStyle = `rgb(${v},${v},${v})`;
   o.fillRect(0, 0, off.width, off.height);
+  // без полутонов: полупрозрачные штрихи -> либо чернила, либо пусто
+  if (solid) {
+    const img = o.getImageData(0, 0, off.width, off.height);
+    const a = img.data;
+    for (let i = 3; i < a.length; i += 4) a[i] = a[i] > 96 ? 255 : 0;
+    o.putImageData(img, 0, 0);
+  }
   return off;
 }
 
@@ -2737,6 +2761,25 @@ function drawLogo(W, H, k, y) {
   const mh = 0.054 * H, mw = DEF_MARK.width * mh / DEF_MARK.height;
   ctx.drawImage(DEF_MARK, fx(0.082 * W), fy(logoY + 0.002 * H), mw * MM, mh * MM);
   return 0.082 * W + mw + 0.015 * W;
+}
+
+// рамка «чернил» рисунка в долях высоты: нужно, чтобы центрировать сам рисунок, а не его кадр
+function inkBox(art) {
+  if (art._ink) return art._ink;
+  const w = 200, h = Math.max(1, Math.round(art.height * 200 / art.width));
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  const o = c.getContext('2d');
+  o.drawImage(art, 0, 0, w, h);
+  const d = o.getImageData(0, 0, w, h).data;
+  let y0 = h, y1 = -1;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      if (d[(y * w + x) * 4 + 3] > 8) { if (y < y0) y0 = y; if (y > y1) y1 = y; }
+    }
+  }
+  art._ink = (y1 < 0) ? { top: 0, bot: 1 } : { top: y0 / h, bot: (y1 + 1) / h };
+  return art._ink;
 }
 
 function drawFront(W, H, k) {
@@ -2754,10 +2797,15 @@ function drawFront(W, H, k) {
   if (!$('noArt').checked && art && art.width) {
     const sc = (+$('artScale').value || 100) / 100;
     const shift = +$('artShift').value || 0;
+    const shiftY = +($('artShiftY') ? $('artShiftY').value : 0) || 0;
     const ah = 0.95 * H * sc, aw = art.width * ah / art.height;
+    // центрируем по «чернилам» рисунка, а не по кадру картинки
+    const ink = inkBox(art);
+    const inkTop = ink.top * ah, inkH = (ink.bot - ink.top) * ah;
+    const topY = (H - inkH) / 2 - inkTop + shiftY;
     ctx.globalAlpha = 0.95;
-    ctx.drawImage(toneImage(art, +$('artTone').value || 18),
-      fx(0.55 * W + shift), fy(0.92 * H - ah), aw * MM, ah * MM);
+    ctx.drawImage(toneImage(art, +$('artTone').value || 18, $('artSolid') && $('artSolid').checked),
+      fx(0.55 * W + shift), fy(topY), aw * MM, ah * MM);
     ctx.globalAlpha = 1;
   }
 
@@ -3047,7 +3095,7 @@ function draw() {
   ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, CW, CH);
   ctx.textAlign = 'left'; ctx.textBaseline = 'top';
   if (side === 'front') drawFront(W, H, k); else drawBack(W, H, k);
-  $('sizeInfo').textContent = `${W} × ${H} мм · с вылетами ${W + 4} × ${H + 4} мм · 300 dpi`;
+  $('sizeInfo').textContent = `${W} × ${H} мм · с вылетами ${W + 4} × ${H + 4} мм · ${DPI} dpi · растр ${canvas.width} × ${canvas.height} px`;
   const st = $('eanState');
   if (st) {
     if (!side === 'back') return;
@@ -3057,29 +3105,57 @@ function draw() {
       : 'нужно 13 цифр';
   }
   $('sideInfo').textContent = side === 'front' ? 'Лицевая сторона' : 'Оборот';
+  schedulePreview();
 }
 
 function makePageCanvas() {
   return canvas.toDataURL('image/png');
 }
 
+function trimOn() {
+  const cb = $('noBleed');
+  return !!(cb && cb.checked);
+}
+
+// обрезает вылеты: из канвы (W+4)x(H+4) берёт зону W x H, сдвинутую на BLEED
+function trimCanvas(W, H) {
+  const c2 = document.createElement('canvas');
+  c2.width = Math.round(W * MM); c2.height = Math.round(H * MM);
+  c2.getContext('2d').drawImage(canvas, BLEED * MM, BLEED * MM, c2.width, c2.height,
+                                0, 0, c2.width, c2.height);
+  return c2;
+}
+
+function downloadPdf(bytes, name) {
+  const blob = new Blob([bytes], { type: 'application/pdf' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  a.click();
+}
+
 async function exportPdf(sides) {
   const { PDFDocument } = PDFLib;
   const doc = await PDFDocument.create();
-  const { w: W, h: H } = dims();
-  const pw = (W + 4) * 72 / 25.4, ph = (H + 4) * 72 / 25.4;
+  const trim = trimOn();
+  const keepSide = side;
   for (const s of sides) {
     side = s; draw();
-    const png = await doc.embedPng(makePageCanvas());
+    const { w: W, h: H } = dims();            // размер берём для той стороны, которую рисуем
+    const pw = (W + (trim ? 0 : 4)) * 72 / 25.4;
+    const ph = (H + (trim ? 0 : 4)) * 72 / 25.4;
+    const cv = trim ? trimCanvas(W, H) : canvas;
+    const png = await doc.embedPng(cv.toDataURL('image/png'));
     const p = doc.addPage([pw, ph]);
     p.drawImage(png, { x: 0, y: 0, width: pw, height: ph });
   }
-  side = 'front'; draw();
-  const blob = new Blob([await doc.save()], { type: 'application/pdf' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = sides.length > 1 ? `этикетка_${W}x${H}_комплект.pdf` : `этикетка_${W}x${H}_оборот.pdf`;
-  a.click();
+  side = keepSide; draw();
+  const { w: W, h: H } = dims();
+  const bytes = await doc.save();
+  downloadPdf(bytes, sides.length > 1
+    ? `этикетка_${W}x${H}${trim ? '_печать' : ''}_комплект.pdf`
+    : `этикетка_${W}x${H}${trim ? '_печать' : ''}_${sides[0] === 'back' ? 'оборот' : 'лицо'}.pdf`);
+  return bytes;
 }
 
 function bindFile(id, setter) {
@@ -3104,7 +3180,7 @@ $('tabBack').onclick = () => {
 };
 
 const IDS = ['w','h','brand','country','lot','process','meta','d1','d2','d3','brew','mass',
-  'artTone','bgAlpha','artScale','artShift','noMark','noBrand','noArt','noBg',
+  'artTone','artSolid','bgAlpha','artScale','artShift','artShiftY','noMark','noBrand','noArt','noBg',
   'bSostav','bDate','bSrok','bStore','bMaker','bLegal','bProd','bKcal','bBrew','bSite','bEan',
   'bShowBrew','showCz','showEan','qScore','showQ','showQr','qrUrl','bw','bh','bTitle','bGost'];
 IDS.forEach(id => $(id).addEventListener('input', draw));
@@ -3145,6 +3221,116 @@ bindFile('artFile', i => imgArt = i);
 })();
 bindFile('bgFile', i => imgBg = i);
 
+(function initFmt() {
+  const sel = $('fmt');
+  if (!sel) return;
+  sel.addEventListener('change', () => {
+    const [w, h] = sel.value.split('x').map(Number);
+    $('w').value = w; $('h').value = h;
+    draw();
+  });
+  // если размер ввели руками — подсветить соответствующий формат в списке
+  const sync = () => {
+    const key = `${+$('w').value}x${+$('h').value}`;
+    if ([...sel.options].some(o => o.value === key)) sel.value = key;
+  };
+  $('w').addEventListener('input', sync);
+  $('h').addEventListener('input', sync);
+})();
+
+(function initDpi() {
+  const sel = $('dpiSel');
+  if (!sel) return;
+  sel.addEventListener('change', () => {
+    DPI = +sel.value || 300;
+    MM = DPI / 25.4;
+    draw();
+    if ($('prev1b').checked) $('prev1b').dispatchEvent(new Event('change'));
+  });
+})();
+
+// --- предпросмотр печати: серое -> 1-бит с дизерингом Флойда-Стейнберга
+let prevTimer = null;
+function schedulePreview() {
+  const cb = $('prev1b');
+  if (!cb || !cb.checked) return;
+  clearTimeout(prevTimer);
+  prevTimer = setTimeout(() => {
+    const img = $('prevImg');
+    if (!img) return;
+    img.src = ditherDataUrl(canvas);
+    img.style.display = 'block';
+  }, 120);
+}
+
+function ditherDataUrl(src) {
+  const c = document.createElement('canvas');
+  c.width = src.width; c.height = src.height;
+  const g = c.getContext('2d');
+  g.drawImage(src, 0, 0);
+  const img = g.getImageData(0, 0, c.width, c.height);
+  const a = img.data, W = c.width, H = c.height, N = W * H;
+  const gray = new Float32Array(N);
+  for (let i = 0, p = 0; i < a.length; i += 4, p++) {
+    gray[p] = 0.299 * a[i] + 0.587 * a[i + 1] + 0.114 * a[i + 2];
+  }
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const i = y * W + x;
+      const nv = gray[i] < 128 ? 0 : 255;
+      const err = gray[i] - nv;
+      gray[i] = nv;
+      if (x + 1 < W) gray[i + 1] += err * 7 / 16;
+      if (y + 1 < H) {
+        if (x > 0) gray[i + W - 1] += err * 3 / 16;
+        gray[i + W] += err * 5 / 16;
+        if (x + 1 < W) gray[i + W + 1] += err * 1 / 16;
+      }
+    }
+  }
+  for (let i = 0, p = 0; p < N; p++, i += 4) {
+    const v = gray[p];
+    a[i] = a[i + 1] = a[i + 2] = v; a[i + 3] = 255;
+  }
+  g.putImageData(img, 0, 0);
+  return c.toDataURL('image/png');
+}
+
+(function initPreview() {
+  const cb = $('prev1b');
+  if (!cb) return;
+  const img = document.createElement('img');
+  img.id = 'prevImg';
+  img.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;border-radius:8px;display:none;pointer-events:none';
+  canvas.parentElement.style.position = 'relative';
+  canvas.parentElement.appendChild(img);
+  cb.addEventListener('change', () => {
+    if (!cb.checked) { img.style.display = 'none'; return; }
+    img.src = ditherDataUrl(canvas);
+    img.style.display = 'block';
+  });
+})();
+
+// --- «без полутонов» фиксирует тон на 100 % и блокирует ползунок
+(function initToneLock() {
+  const cb = $('artSolid'), t = $('artTone');
+  if (!cb || !t) return;
+  let saved = +t.value || 50;
+  const lab = t.closest('label');
+  const apply = () => {
+    if (cb.checked) {
+      if (+t.value !== 100) saved = +t.value || 50;
+      t.value = 100;
+    } else {
+      t.value = saved;
+    }
+    t.disabled = cb.checked;
+    if (lab) lab.style.opacity = cb.checked ? .45 : 1;
+  };
+  cb.addEventListener('change', () => { apply(); draw(); });
+  apply();
+})();
+
 $('print').onclick = () => {
   const { w: W, h: H } = dims();
   const c2 = document.createElement('canvas');
@@ -3164,33 +3350,34 @@ $('pdfBatch').onclick = async () => {
   const { PDFDocument } = PDFLib;
   const doc = await PDFDocument.create();
   const W = +$('bw').value, H = +$('bh').value;
-  const pw = (W + 4) * 72 / 25.4, ph = (H + 4) * 72 / 25.4;
+  const trim = trimOn();
+  const pw = (W + (trim ? 0 : 4)) * 72 / 25.4, ph = (H + (trim ? 0 : 4)) * 72 / 25.4;
   const keepSide = side;
   side = 'back';
   const saved = czImg;
   for (const img of czImgs) {
     czImg = img; draw();
-    const png = await doc.embedPng(canvas.toDataURL('image/png'));
+    const cv = trim ? trimCanvas(W, H) : canvas;
+    const png = await doc.embedPng(cv.toDataURL('image/png'));
     const p = doc.addPage([pw, ph]);
     p.drawImage(png, { x: 0, y: 0, width: pw, height: ph });
   }
   czImg = saved; side = keepSide; draw();
-  const blob = new Blob([await doc.save()], { type: 'application/pdf' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = `обороты_${czImgs.length}шт_${W}x${H}.pdf`;
-  a.click();
+  downloadPdf(await doc.save(), `обороты_${czImgs.length}шт_${W}x${H}${trim ? '_печать' : ''}.pdf`);
 };
 
 $('pdfSet').onclick = () => exportPdf(['front', 'back']);
 $('pdfOne').onclick = () => exportPdf([side]);
-$('png').onclick = () => canvas.toBlob(b => {
+$('png').onclick = () => {
   const { w: W, h: H } = dims();
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(b);
-  a.download = `этикетка_${W}x${H}_${side === 'front' ? 'лицо' : 'оборот'}.png`;
-  a.click();
-}, 'image/png');
+  const src = trimOn() ? trimCanvas(W, H) : canvas;
+  src.toBlob(b => {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(b);
+    a.download = `этикетка_${W}x${H}_${side === 'front' ? 'лицо' : 'оборот'}.png`;
+    a.click();
+  }, 'image/png');
+};
 
 const KC = 'белки 13,9 · жиры 14,4 · углеводы 29,5 · 331 ккал';
 const KT = 'белки 20 · жиры 5,1 · углеводы 6,9 · 152 ккал';
