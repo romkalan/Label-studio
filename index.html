@@ -58,13 +58,13 @@ canvas{width:100%;height:auto;background:#fff;border-radius:8px;box-shadow:0 6px
 
     <div id="paneFront">
       <div class="row">
-        <label>Ширина лица, мм<input id="w" type="number" value="110" min="50" max="300"></label>
+        <label>Ширина лица, мм<input id="w" type="number" value="100" min="50" max="300"></label>
         <label>Высота лица, мм<input id="h" type="number" value="70" min="40" max="300"></label>
       </div>
       <label>Готовый формат
         <select id="fmt">
-          <option value="110x70" selected>110 × 70 — рулон 110</option>
-          <option value="108x67">108 × 67 — уменьшенный</option>
+          <option value="100x70" selected>100 × 70 — под печать</option>
+          <option value="110x70">110 × 70 — полный размер</option>
         </select>
       </label>
       <label>Страна<input id="country" value="КЕНИЯ"></label>
@@ -91,7 +91,7 @@ canvas{width:100%;height:auto;background:#fff;border-radius:8px;box-shadow:0 6px
       <label>Сдвиг рисунка, мм<input id="artShift" type="range" min="-40" max="25" value="0"></label>
       <label>Сдвиг по высоте, мм<input id="artShiftY" type="range" min="-30" max="30" value="0"></label>
       <label>Тон рисунка, %<input id="artTone" type="range" min="0" max="100" value="50"></label>
-      <label class="chk"><input id="artSolid" type="checkbox"> Рисунок без полутонов (термопечать)</label>
+      <label class="chk"><input id="artSolid" type="checkbox" checked> Рисунок без полутонов (термопечать)</label>
       <label>Фон (файл)<input id="bgFile" type="file" accept="image/*"></label>
       <label>Прозрачность фона, %<input id="bgAlpha" type="range" min="0" max="100" value="100"></label>
     </div>
@@ -2567,6 +2567,12 @@ function fitTracked(text, startMm, maxMm, weight, ratio, fam = 'Mont') {
   }
   return { sz: 2.2, tr: ratio * 2.2 };
 }
+// уменьшает кегль при фиксированном трекинге (для строки метаданных)
+function fitFixedTrack(text, startMm, maxMm, weight, trackMm, fam = 'Mont') {
+  let sz = startMm;
+  while (sz > 1.9 && textW(text, font(sz, weight, fam), trackMm) > maxMm * MM) sz -= 0.05;
+  return sz;
+}
 function spaced(text, x, y, sizeMm, weight, track, maxMm, fam = 'Mont') {
   const s = fitSize(text, sizeMm, maxMm, weight, track, fam);
   ctx.font = font(s, weight, fam); ctx.fillStyle = '#000'; ctx.textBaseline = 'top';
@@ -2783,7 +2789,11 @@ function inkBox(art) {
 }
 
 function drawFront(W, H, k) {
-  const left = 0.082 * W, colW = 0.52 * W;
+  const left = 0.082 * W;
+  // текст не должен залезать на рисунок: считаем правую границу текстовой колонки
+  const artX = 0.55 * W;
+  const textMaxW = Math.max(0.42 * W, artX - left - 0.02 * W);
+  const colW = Math.min(0.52 * W, textMaxW);
 
   if (imgBg && !$('noBg').checked) {
     ctx.globalAlpha = (+$('bgAlpha').value || 100) / 100;
@@ -2824,8 +2834,8 @@ function drawFront(W, H, k) {
   }
   // вертикальный поток: лот → обработка → метаданные → чипы → подвал
   const lotBase = 0.077 * H * k, procBase = 0.033 * H * k, metaBase = 0.032 * H * k;
-  const lotMaxW = Math.min(0.72 * W, W - 2 * left);
-  const metaMaxW = Math.min(0.62 * W, W - 2 * left);
+  const lotMaxW = Math.min(0.72 * W, textMaxW);
+  const metaMaxW = Math.min(0.62 * W, textMaxW);
   const chipH = 0.070 * H, radius = 0.035 * H;
   const footSize = Math.min(0.043 * H * k, 0.06 * H);
 
@@ -2833,9 +2843,10 @@ function drawFront(W, H, k) {
     const lotFit = fitTracked($('lot').value, lotBase * fc, lotMaxW, 300, 0.13);
     const lotSize = lotFit.sz, lotLH = lotSize * 1.18, lotN = 1;
     const procSize = procBase * fc, procLH = procSize * 1.35;
-    const metaSize = metaBase * fc, metaLH = metaSize * 1.4;
+    const metaSize = fitFixedTrack($('meta').value, metaBase * fc, metaMaxW, 500, 0.006 * W);
+    const metaLH = metaSize * 1.4;
     const procN = splitLines($('process').value, font(procSize, 600), 0.009 * W, colW).length;
-    const metaN = splitLines($('meta').value, font(metaSize, 500), 0.006 * W, metaMaxW).length;
+    const metaN = 1;
     const h = lotN * lotLH + 0.022 * H + procN * procLH + 0.014 * H + metaN * metaLH;
     return { lotSize, lotLH, lotN, procSize, procLH, procN, metaSize, metaLH, metaN, h };
   }
@@ -2872,7 +2883,7 @@ function drawFront(W, H, k) {
   }
 
   yb += mF.procN * mF.procLH + 0.014 * H;
-  spacedBlock($('meta').value, left, yb, mF.metaSize, 500, 0.006 * W, metaMaxW, mF.metaLH);
+  spacedFixed($('meta').value, left, yb, mF.metaSize, 500, 0.006 * W);
   yb += mF.metaN * mF.metaLH;
 
   const chips = [$('d1').value, $('d2').value, $('d3').value].filter(Boolean);
